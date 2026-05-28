@@ -1,168 +1,122 @@
-🔊 WakeWordApp — KWS 模型架構說明
-本文件說明 WakeWordApp 所使用的 喚醒詞偵測模型（KWS Model），包含資料流程、特徵工程、模型架構、訓練方式與推論邏輯。
+# 🔔 WakeWordApp — KWS Engine 判斷邏輯（kws_engine）
 
-1. 🎯 模型目標（Model Objective）
-WakeWordApp 的模型目標是：
+本文件說明 WakeWordApp 在推論階段如何判斷「喚醒詞是否被觸發」。
+這是整個 KWS 系統的核心邏輯，負責把模型輸出的分數轉換成「是否喚醒成功」。
 
-在 低延遲、低耗電 的情況下
+---
 
-持續偵測使用者自訂的喚醒詞
+## 1. 🎯 KWS Engine 的目標
 
-完全 離線運作
+- 持續監聽麥克風輸入  
+- 將音訊切成小片段（sliding window）  
+- 每片段丟進模型做推論  
+- 根據模型輸出的分數判斷是否喚醒  
+- 避免誤判（false positive）  
+- 保持低延遲、低耗電  
 
-可由使用者 本地訓練 自己的喚醒詞模型
+---
 
-模型需能在手機 CPU 上即時運作（無需 GPU）。
+## 2. 🪟 Sliding Window（滑動窗）
 
-2. 🔄 整體資料流程（Data Flow）
-Code
-麥克風 → 音訊前處理 → MFCC 特徵 → 模型推論 → KWS Engine → 觸發動作
-(1) 音訊前處理（DSP Layer）
-16kHz / mono
+WakeWordApp 使用固定長度的音訊片段做推論：
 
-Pre-emphasis
+```text
+Window size：1 秒
+Hop size：100ms（或 10% overlap）
+```
 
-Framing（25ms frame, 10ms hop）
+流程：
 
-Hamming window
+1. 收集 1 秒音訊  
+2. 做 MFCC  
+3. 丟進模型  
+4. 每 100ms 更新一次結果  
 
-Noise reduction（可選）
+---
 
-(2) 特徵工程（MFCC）
-13～40 維 MFCC
+## 3. 📊 模型輸出格式
 
-加上 Δ、ΔΔ（可選）
+模型輸出兩個分數：
 
-1 秒音訊 → 約 98 個 frame
+```text
+wakeword_score
+nonwake_score
+```
 
-(3) 模型輸入（Input Tensor）
-Code
-shape = [98, 40]   # 1 秒 MFCC
-dtype = float32
-3. 🧠 模型架構（Model Architecture）
-WakeWordApp 支援兩種模型：
+我們只需要：
 
-A. TFLite 小型 CNN（預設）
-適合手機即時推論，架構如下：
+```text
+wakeword_score
+```
 
-Code
-Input (98x40 MFCC)
-↓
-Conv2D (filters=16, kernel=3x3)
-↓
-ReLU
-↓
-MaxPool
-↓
-Conv2D (filters=32)
-↓
-ReLU
-↓
-Flatten
-↓
-Dense (64)
-↓
-Dense (2) → [wakeword, non-wakeword]
-↓
-Softmax
-優點：
+---
 
-小、快、省電
+## 4. 🎚 閾值判斷（Threshold）
 
-可本地訓練
+```text
+若 wakeword_score > threshold
+則視為「可能喚醒」
+```
 
-適合自訂喚醒詞
+預設：
 
-模型大小： 50KB～200KB
-推論速度： < 5ms（手機 CPU）
+```text
+threshold = 0.7
+```
 
-B. Vosk / Kaldi（可選）
-適合語音辨識或多喚醒詞情境。
+---
 
-優點：
+## 5. 🔁 連續 N 次判定（避免誤判）
 
-穩定
+```text
+連續 N 次超過 threshold 才算喚醒成功
+```
 
-支援多語言
+預設：
 
-可擴充語音命令
+```text
+N = 3
+```
 
-缺點：
+---
 
-模型較大（5MB～50MB）
+## 6. 🔕 Debounce（冷卻時間）
 
-不適合本地訓練
+```text
+喚醒成功後，進入 1 秒冷卻時間
+```
 
-WakeWordApp 預設使用 TFLite CNN 作為 KWS 模型。
+---
 
-4. 🏋️‍♂️ 本地訓練流程（User Training）
-使用者錄製 3～5 次喚醒詞後，App 會：
+## 7. 🧠 KWS Engine 內部狀態（簡化版）
 
-(1) 音訊切片
-自動偵測語音區段
+```text
+score_history      # 最近 N 次的分數
+consecutive_count  # 連續超過 threshold 的次數
+cooldown_timer     # 冷卻時間
+```
 
-去除靜音
+---
 
-(2) 特徵抽取
-將每段語音轉成 MFCC
+## 8. 🧩 簡化流程（Pseudo Code）
 
-(3) 建立訓練資料
-Code
-wakeword: 使用者錄音
-non-wakeword: 系統內建背景噪音 + 靜音
-(4) 訓練小型 CNN
-5～20 epoch
+```python
+for each frame:
+    score = model.predict(mfcc)
 
-Adam optimizer
+    if cooldown_timer > 0:
+        cooldown_timer -= 1
+        continue
 
-Loss: categorical crossentropy
+    if score > threshold:
+        consecutive_count += 1
+    else:
+        consecutive_count = 0
 
-(5) 匯出 TFLite 模型
-Code
-model.tflite
-labels.txt
-5. ⚡ 推論邏輯（Inference Logic）
-WakeWordApp 使用 滑動視窗（sliding window） 持續偵測：
+    if consecutive_count >= N:
+        trigger_wakeword()
+        consecutive_count = 0
+        cooldown_timer = COOLDOWN_FRAMES
+```
 
-Code
-每 100ms 取 1 秒音訊 → 產生 MFCC → 模型推論
-模型輸出：
-
-Code
-[ wakeword_score , nonwake_score ]
-KWS Engine 判斷：
-
-若 wakeword_score > 閾值（預設 0.7）
-
-且連續 N 次（預設 3 次）
-→ 判定為喚醒成功
-
-6. 📦 模型檔案結構
-Code
-model/
-├── model.tflite        # KWS 模型
-├── labels.txt          # 類別標籤
-└── config.json         # 閾值、特徵設定
-7. 📱 手機效能需求（Mobile Performance）
-CPU：任何 ARMv8 以上
-
-RAM：< 5MB
-
-推論速度：5ms～10ms
-
-電量消耗：< 1% / 小時（前景服務）
-
-8. 🔧 可替換模型（Future Options）
-WakeWordApp 架構支援：
-
-Google Speech Commands CNN
-
-DS-CNN（Depthwise CNN）
-
-CRNN（CNN + GRU）
-
-TinyML Edge Impulse 模型
-
-未來可直接替換 model.tflite。
-
-✔️ 文件結束
+---
