@@ -1,11 +1,9 @@
 # 🔔 WakeWordApp — KWS Engine 判斷邏輯（kws_engine）
 
 本文件說明 WakeWordApp 在推論階段如何判斷「喚醒詞是否被觸發」。
-
 這是整個 KWS 系統的核心邏輯，負責把模型輸出的分數轉換成「是否喚醒成功」。
 
 ---
-
 ## 1. 🎯 KWS Engine 的目標
 
 - 持續監聽麥克風輸入  
@@ -16,15 +14,14 @@
 - 保持低延遲、低耗電  
 
 ---
-
 ## 2. 🪟 Sliding Window（滑動窗）
 
 WakeWordApp 使用固定長度的音訊片段做推論：
 
+```text
 Window size：1 秒
 Hop size：100ms（或 10% overlap）
-
-Code
+```
 
 流程：
 
@@ -36,58 +33,55 @@ Code
 這樣可以做到「即時偵測」。
 
 ---
-
 ## 3. 📊 模型輸出格式
 
 模型輸出兩個分數：
 
+```text
 wakeword_score
 nonwake_score
-
-Code
+```
 
 兩者加起來 ≈ 1（softmax）。
 
 我們只需要：
 
+```text
 wakeword_score
-
-Code
+```
 
 ---
-
 ## 4. 🎚 閾值判斷（Threshold）
 
 WakeWordApp 使用簡單明確的規則：
 
+```text
 若 wakeword_score > threshold
 則視為「可能喚醒」
-
-Code
+```
 
 預設：
 
+```text
 threshold = 0.7
-
-Code
+```
 
 可在 `config.json` 調整。
 
 ---
-
 ## 5. 🔁 連續 N 次判定（避免誤判）
 
 為了避免背景噪音造成誤觸，WakeWordApp 使用：
 
+```text
 連續 N 次超過 threshold 才算喚醒成功
-
-Code
+```
 
 預設：
 
+```text
 N = 3
-
-Code
+```
 
 也就是：
 
@@ -98,31 +92,28 @@ Code
 若中間有一次低於 threshold，計數歸零。
 
 ---
-
 ## 6. 🔕 Debounce（冷卻時間）
 
 避免連續觸發：
 
+```text
 喚醒成功後，進入 1 秒冷卻時間
-
-Code
+```
 
 冷卻期間不再判斷。
 
 ---
-
 ## 7. 🧠 KWS Engine 內部狀態（簡化版）
 
 KWS Engine 維護三個變數：
 
+```text
 score_history      # 最近 N 次的分數
 consecutive_count  # 連續超過 threshold 的次數
 cooldown_timer     # 冷卻時間
-
-Code
+```
 
 ---
-
 ## 8. 🧩 簡化流程（Pseudo Code）
 
 ```python
@@ -142,6 +133,10 @@ for each frame:
         trigger_wakeword()
         consecutive_count = 0
         cooldown_timer = COOLDOWN_FRAMES
+```
+
 這就是 WakeWordApp 的核心判斷邏輯。
 
-✔️ 文件結束
+---
+
+## ✔️ 文件結束
